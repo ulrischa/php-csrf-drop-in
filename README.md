@@ -1,0 +1,1 @@
+# php-csrf-drop-in
