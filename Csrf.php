@@ -6,7 +6,7 @@ declare(strict_types=1);
  * Session-backed CSRF protection for traditional HTML forms.
  *
  * Tokens remain reusable until they expire or are explicitly regenerated.
- * Session cookie security must be configured by the application.
+ * Hardened session initialization is optional; active sessions are never modified.
  */
 final class Csrf
 {
@@ -16,6 +16,116 @@ final class Csrf
 
     /** @var int|null Token lifetime in seconds; null disables the extra expiry. */
     private static $ttl = 7200;
+
+    /**
+     * Configure and start a hardened PHP session explicitly, before any output.
+     * Existing active sessions are never reconfigured.
+     *
+     * Supported options: name, same_site (Lax or Strict), lifetime (seconds).
+     * Secure, HttpOnly, root path and host-only cookie scope are mandatory.
+     *
+     * @param array<string, mixed> $options
+     */
+    public static function startSecureSession(array $options = []): void
+    {
+        if (session_status() !== PHP_SESSION_NONE) {
+            throw new LogicException('CSRF: Secure session setup requires an inactive session.');
+        }
+
+        if (headers_sent()) {
+            throw new RuntimeException('CSRF: Secure session setup must happen before output.');
+        }
+
+        foreach ($options as $key => $value) {
+            if (!in_array($key, ['name', 'same_site', 'lifetime'], true)) {
+                throw new InvalidArgumentException('CSRF: Unknown secure session option.');
+            }
+        }
+
+        $options += [
+            'name' => '__Host-csrf',
+            'same_site' => 'Lax',
+            'lifetime' => 0,
+        ];
+
+        $name = $options['name'];
+        $sameSite = $options['same_site'];
+        $lifetime = $options['lifetime'];
+
+        if (!is_string($name) || !preg_match('/\A(?=.*[A-Za-z])[A-Za-z0-9_-]{1,128}\z/D', $name)) {
+            throw new InvalidArgumentException('CSRF: Invalid PHP session name.');
+        }
+
+        if (!is_string($sameSite) || !in_array($sameSite, ['Lax', 'Strict'], true)) {
+            throw new InvalidArgumentException('CSRF: SameSite must be Lax or Strict.');
+        }
+
+        if (!is_int($lifetime) || $lifetime < 0) {
+            throw new InvalidArgumentException('CSRF: Cookie lifetime must be a non-negative integer.');
+        }
+
+        // Fail instead of silently continuing with weaker PHP session settings.
+        foreach ([
+            'session.use_strict_mode' => '1',
+            'session.use_cookies' => '1',
+            'session.use_only_cookies' => '1',
+            'session.use_trans_sid' => '0',
+        ] as $setting => $value) {
+            if (ini_set($setting, $value) === false) {
+                throw new RuntimeException('CSRF: Cannot configure ' . $setting . '.');
+            }
+        }
+
+        if (session_name($name) === false) {
+            throw new RuntimeException('CSRF: Cannot set the PHP session name.');
+        }
+
+        // Omit Domain to satisfy the browser's __Host- cookie requirements.
+        if (!session_set_cookie_params([
+            'lifetime' => $lifetime,
+            'path' => '/',
+            'domain' => '',
+            'secure' => true,
+            'httponly' => true,
+            'samesite' => $sameSite,
+        ])) {
+            throw new RuntimeException('CSRF: Cannot configure session cookie parameters.');
+        }
+
+        self::assertSecureSession();
+        self::start();
+    }
+
+    /**
+     * Audit PHP session settings without changing or starting a session.
+     * Does not verify TLS termination, session storage, or browser behavior.
+     */
+    public static function assertSecureSession(): void
+    {
+        $settings = [
+            'session.use_strict_mode' => '1',
+            'session.use_cookies' => '1',
+            'session.use_only_cookies' => '1',
+            'session.use_trans_sid' => '0',
+        ];
+
+        foreach ($settings as $name => $expected) {
+            if (ini_get($name) !== $expected) {
+                throw new RuntimeException('CSRF: Insecure session setting: ' . $name . '.');
+            }
+        }
+
+        $cookie = session_get_cookie_params();
+        if (
+            !$cookie['secure']
+            || !$cookie['httponly']
+            || $cookie['path'] !== '/'
+            || $cookie['domain'] !== ''
+            || !in_array($cookie['samesite'] ?? '', ['Lax', 'Strict'], true)
+        ) {
+            throw new RuntimeException('CSRF: Insecure session cookie parameters.');
+        }
+    }
 
     /**
      * Start the existing application session if needed.

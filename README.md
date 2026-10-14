@@ -42,7 +42,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 
 **Csrf::field('contact')** renders a hidden input named **_csrf**. **Csrf::enforce('contact')** stops invalid requests with HTTP 403. Both calls must use the same server-defined form ID (the default is **default**).
 
-The class automatically starts a PHP session if necessary, but a session must be started before HTML output. Configure secure session cookies centrally (see below).
+The class reuses PHP sessions without changing their configuration. Hardened session startup is optionally available for new applications; see below.
 
 ## Inline error handling
 
@@ -106,7 +106,9 @@ That also invalidates copies of the older token in other browser tabs.
 | **Csrf::enforce($formId = 'default')** | Reject invalid POST with HTTP 403 and exit. |
 | **Csrf::regenerate($formId = 'default')** | Rotate the form token. |
 | **Csrf::setTtl($seconds)** | Set lifetime (seconds) or null; default 7,200 seconds. |
-| **Csrf::start()** | Start the PHP session if not already active. |
+| **Csrf::start()** | Start or reuse the normal PHP session without changing its configuration. |
+| **Csrf::startSecureSession($options = [])** | Opt in to hardened session creation before output. |
+| **Csrf::assertSecureSession()** | Audit the current PHP configuration without modifying it. |
 
 ### Fetch / AJAX
 
@@ -136,26 +138,47 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST'
 
 **check()** and **enforce()** intentionally only allow POST. For PUT/PATCH/DELETE, check the expected method yourself and pass a token from a trusted header or parsed body to **validate()**. Do not place tokens in URLs or query strings.
 
-## Secure session configuration
+## Secure session configuration (optional)
 
-The class **does not silently alter application session settings**. On HTTPS, configure before starting a session or invoking CSRF methods:
+Existing applications can keep using **Csrf::start()**, **Csrf::field()**, and **Csrf::check()** without any changes. The class reuses an active PHP session and never silently renames it or changes its cookie attributes.
+
+### New applications: hardened setup
+
+On **HTTPS**, call this once at the beginning of **every request**, before any output or calls to session_start() or other CSRF methods:
 
 ~~~php
-ini_set('session.use_strict_mode', '1');
-ini_set('session.use_only_cookies', '1');
+<?php
+require_once __DIR__ . '/Csrf.php';
 
-session_set_cookie_params([
+Csrf::startSecureSession([
+    'name' => '__Host-myapp',
+    'same_site' => 'Lax',
     'lifetime' => 0,
-    'path' => '/',
-    'secure' => true,
-    'httponly' => true,
-    'samesite' => 'Lax',
 ]);
-
-session_start();
 ~~~
 
-Always use HTTPS in production. Consider **SameSite=Strict** for sensitive applications. Avoid broad cookie domains that include less trusted subdomains. Regenerate the PHP session ID at login or privilege changes, invalidate it on logout, and rotate CSRF tokens at authentication boundaries when appropriate.
+Defaults: **name = __Host-csrf**, **same_site = Lax**, **lifetime = 0** (browser session). Choose a different __Host- name for each application on the same hostname to avoid collisions. A non-negative lifetime in seconds and **SameSite=Strict** are also supported. Unknown option names, invalid names, and invalid values cause an exception.
+
+The initializer enforces **Secure**, **HttpOnly**, **Path=/**, **no Domain**, and **SameSite=Lax or Strict**. It enables **session.use_strict_mode**, **session.use_cookies**, **session.use_only_cookies**, and disables **session.use_trans_sid**. These security-sensitive settings cannot be weakened through the initializer. The __Host- prefix is enforced by compatible browsers when the matching attributes are present, not by PHP itself.
+
+Secure cookies require HTTPS in production; over ordinary HTTP they will not be sent back by browsers. Behind a TLS-terminating reverse proxy, configure the proxy and application TLS policy separately. The class does not infer security from potentially untrusted forwarded headers.
+
+**Important:** This initializes the normal PHP session, not an additional CSRF-only session. If a PHP session already exists (including session.auto_start), **startSecureSession() throws LogicException** and never modifies it. Set up the session once in your application's bootstrap code.
+
+### Existing applications: optional security audit
+
+To **check** the current configuration without changing it or starting any session, use:
+
+~~~php
+require_once __DIR__ . '/Csrf.php';
+
+// After configuring your application's PHP session:
+Csrf::assertSecureSession(); // Throws RuntimeException on failure.
+~~~
+
+The audit checks the PHP settings above and requires cookie Secure, HttpOnly, SameSite Lax/Strict, root path, and no Domain. This is an **intentionally strict policy**: a legacy app with a legitimately restricted cookie path may fail the audit but may continue using CSRF protection without calling it. A passing audit cannot establish whether HTTPS, browser handling, previously issued cookies, session storage, or custom PHP save handlers are secure. If using a custom session save handler, confirm that strict mode truly rejects unknown session IDs.
+
+**Session IDs remain the application's responsibility:** regenerate them on login and privilege changes with session_regenerate_id(true), and invalidate the session on logout. **Csrf::regenerate()** rotates a form token, **not** the PHP session ID.
 
 ### Security limitations
 
@@ -176,10 +199,12 @@ No Composer or test framework needed:
 ~~~bash
 php -l Csrf.php
 php tests/run.php
+php tests/secure_session.php
+php tests/existing_session.php
 bash tests/http_smoke.sh
 ~~~
 
-The unit tests exercise form isolation, token shape, invalid input, GET/POST checking, rotation, expired/future timestamps, malformed session data, and configurable TTL. The HTTP test requires **curl** and the PHP built-in server; it checks live session cookies, success and 403 responses, repeated submissions, and output escaping.
+The unit tests exercise form isolation, token shape, invalid input, GET/POST checking, rotation, expired/future timestamps, malformed session data, configurable TTL, secure session startup, and legacy session compatibility. The HTTP test requires **curl** and the PHP built-in server; it checks live session cookies, success and 403 responses, repeated submissions, and output escaping.
 
 GitHub Actions tests PHP **7.4, 8.2, 8.4, and 8.5** for push and pull requests.
 

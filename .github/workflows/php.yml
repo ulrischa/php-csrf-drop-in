@@ -24,5 +24,9 @@ jobs:
         run: find . -name '*.php' -print0 | xargs -0 -n1 php -l
       - name: Run CSRF tests
         run: php tests/run.php
+      - name: Test secure session setup
+        run: php tests/secure_session.php
+      - name: Test existing sessions
+        run: php tests/existing_session.php
       - name: HTTP smoke test
         run: bash tests/http_smoke.sh
