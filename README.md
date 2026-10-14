@@ -206,8 +206,7 @@ bash tests/http_smoke.sh
 
 The unit tests exercise form isolation, token shape, invalid input, GET/POST checking, rotation, expired/future timestamps, malformed session data, configurable TTL, secure session startup, and legacy session compatibility. The HTTP test requires **curl** and the PHP built-in server; it checks live session cookies, success and 403 responses, repeated submissions, and output escaping.
 
-GitHub Actions tests PHP **7.4, 8.2, 8.4, and 8.5** for push and pull requests.
 
 ## License
 
-No license has been selected yet. The repository owner can add one to grant reuse/redistribution rights.
+MIT
