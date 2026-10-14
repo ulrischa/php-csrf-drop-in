@@ -1,0 +1,28 @@
+name: PHP tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.2', '8.4', '8.5']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - name: Syntax check
+        run: find . -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: Run CSRF tests
+        run: php tests/run.php
+      - name: HTTP smoke test
+        run: bash tests/http_smoke.sh
